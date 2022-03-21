@@ -1,3 +1,10 @@
+##########################################################################
+## Read trace files in trace compass and make a database of events      ##
+## Iman Kohyarnejadfard                                                 ##
+## Polytechnique Montréal                                               ##
+## process_trace.py                                                     ##
+##########################################################################
+
 import time
 import json
 import gc
@@ -56,10 +63,10 @@ def runAnalysis():
             
         
 			    
-def make_spans(ust_path):
+def make_spans(csv_path):
     rows = []
     print('Step 2: Load UST data...')
-    with open('/home/iman/Desktop/ust_events.csv') as myFile:
+    with open(csv_path) as myFile:
         reader = csv.DictReader(myFile)
         for row in reader:
             ust_event = {}
@@ -85,7 +92,7 @@ def make_spans(ust_path):
     print('Step 3: Spans are successfully extracted.')
     
 runAnalysis()
-spans = make_spans(csv_path)
+spans = make_spans('events.csv')
 
 
 
