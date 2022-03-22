@@ -1,18 +1,41 @@
 ##########################################################################
-## Read events obtained from traces and make sequences of keys          ##
+## Read events obtained from traces and make sequences of keys and      ##
+## train model                                                          ##
 ## Iman Kohyarnejadfard                                                 ##
 ## Polytechnique Montréal                                               ##
 ## process_events.py                                                    ##
 ##########################################################################
 
 from load_ReqReps import load_ReqReps
+import config as config
+from PrepareDataset import PrepareDataset
 import csv
 import json
 from colorama import Fore
 import os
 import numpy as np
-import config as config
+import time
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import TensorDataset, DataLoader
+import argparse
+from sklearn.model_selection import train_test_split
+import datetime
+from random import randint
+import psutil
+import torch.cuda as cutorch
+from torch.utils.data import Dataset
+import random
+import copy
 
+
+# Device configuration
+device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
+torch.cuda.empty_cache()
+print(Fore.GREEN + 'Detected Device: ' +
+      Fore.MAGENTA + str(device) + Fore.RESET)
 
 def load_ust_events(ust_path):
     rows = []
@@ -236,6 +259,192 @@ def process_trace(ust_path=None, all_events_path=None):
           Fore.YELLOW + '-' * 10)
 
 
+
+def show_system_info(GPU_card_index):
+    a = torch.cuda.memory_allocated(GPU_card_index)/(1024*1024)
+    t = torch.cuda.get_device_properties(GPU_card_index).total_memory/(1024*1024)
+    print(Fore.GREEN + 'mem: ' + Fore.MAGENTA + '{}%, '.format(psutil.virtual_memory().percent) +
+        Fore.GREEN + 'CPU: ' + Fore.MAGENTA + '{}%, '.format(psutil.cpu_percent()) +
+        Fore.GREEN + 'GPU-mem(MB): ' + Fore.MAGENTA + '{} of {}'.format(int(a),int(t)) +
+        Fore.RESET)
+
+
+# This function reads all cvs files in folder_path and obtains sequences
+def load_data(folder_path):
+    time_series = []
+    file_list = os.listdir(folder_path)
+    for file_ in file_list:
+        with open('{}/{}'.format(folder_path, file_)) as f:
+            spans = json.load(f)
+        for key in spans.keys():
+            time_series.append(spans[key])
+        print(Fore.GREEN + 'File ' + Fore.MAGENTA +
+              file_ + Fore.GREEN + ' was loaded. ')
+    return time_series
+
+
+def create_randomized_set(sequences):
+    order = np.arange(len(sequences))
+    random.shuffle(order)
+    new_sequences = []
+    for index in order:
+        new_sequences.append(sequences[index])
+    return new_sequences
+
+
+def make_dataset(folder_path, window_size):
+    data = []
+    data_set_folder = os.path.dirname(os.path.realpath(__file__)) + '/data_set'
+    dataset_path = '{}/dataset.json'.format(data_set_folder)
+    features_path = '{}/features_windowsize={}.json'.format(data_set_folder,window_size)
+    if not os.path.isfile(dataset_path):
+        if not os.path.isdir(data_set_folder):
+            os.makedirs(data_set_folder)
+        time_series = load_data(folder_path)
+        time_series = create_randomized_set(time_series)
+
+        random_indexes = []
+        for i in range(int(len(time_series)*config.test_percentage)):
+            rand_ind = randint(0, len(time_series))
+            if rand_ind not in random_indexes:
+                random_indexes.append(rand_ind)
+
+        train_series = []
+        test_series = []
+        for i in range(len(time_series)):
+            if i in random_indexes:
+                test_series.append(time_series[i])
+            else:
+                train_series.append(time_series[i])
+        data = {
+            'test_set': test_series,
+            'train_set': train_series
+        }
+        with open(dataset_path, 'w') as json_file:
+            json.dump(data, json_file)
+
+        print(Fore.GREEN + 'Dataset was stored in: ' +
+              Fore.MAGENTA + dataset_path + Fore.GREEN)
+
+    else:
+        print(Fore.GREEN + 'Dataset file exists.')
+        with open(dataset_path) as f:
+            data = json.load(f)
+        print(Fore.GREEN + 'Dataset is loaded.')
+
+    db = PrepareDataset()
+    db.process_dataset(data, config.fields)
+    inputs, outputs = db.get_train_sequences(window_size)
+    with open(features_path, 'w') as json_file:
+        json.dump(db.features, json_file)
+    num_classes = len(db.features)
+    train_series_ = db.series_
+    test_series_ = db.test_series_
+    num_sessions = len(db.series)
+    num_seqs = len(db.X)
+    del db
+
+    print(Fore.GREEN + 'Number of sessions: ' +
+          Fore.MAGENTA + str(num_sessions))
+    print(Fore.GREEN + 'Number of seqs: ' + Fore.MAGENTA + str(num_seqs))
+    print(Fore.GREEN + 'Number of classes: ' + Fore.MAGENTA + str(num_classes))
+
+    return inputs, outputs, train_series_, test_series_, num_classes, num_sessions, num_seqs
+
+
+class Model(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_keys):
+        super(Model, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_size, hidden_size,
+                            num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, num_keys)
+
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0),
+                         self.hidden_size).to(device)
+        c0 = torch.zeros(self.num_layers, x.size(0),
+                         self.hidden_size).to(device)
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])
+        return out
+
+
+class timeseries(Dataset):
+    def __init__(self, x, y):
+        self.x = torch.tensor(x, dtype=torch.float)
+        self.y = torch.tensor(y)
+        self.len = x.shape[0]
+
+    def __getitem__(self, idx):
+        return self.x[idx], self.y[idx]
+
+    def __len__(self):
+        return self.len
+
+
+def train_lstm(window_size=config.window_size, model_path = config.model_path):
+    # Read .csv files and extract all sequence of size k and make dataset
+    print(Fore.YELLOW + 'Train-Step1: ')
+    folder_path = os.path.dirname(
+        os.path.realpath(__file__)) + '/train_sequences'
+    inputs, outputs, train_series_, validation_series_, num_classes, num_sessions, num_seqs = make_dataset(folder_path, window_size)
+    num_classes+=1
+    # Train LSTM Model
+    print(Fore.YELLOW + 'train-Step2: ')
+    if not os.path.isfile(model_path):
+        model = Model(config.input_size, config.hidden_size,
+                      config.num_layers, num_classes).to(device)
+
+        dataset = timeseries(np.array(inputs), np.array(outputs))
+        dataloader = DataLoader(dataset, num_workers=8,
+                                shuffle=True, batch_size=config.batch_size)
+
+        # Loss and optimizer
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(model.parameters())
+
+        # Train the model
+        start_time = time.time()
+        total_step = len(dataloader)
+        for epoch in range(config.num_epochs):  # Loop over the dataset multiple times
+            train_loss = 0
+            for step, (seq, label) in enumerate(dataloader):
+                # Forward pass
+                seq = seq.clone().detach().view(-1, window_size, config.input_size).to(device)
+                output = model(seq)
+                loss = criterion(output, label.to(device))
+                # Backward and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                train_loss += loss.item()
+                optimizer.step()
+            print('Epoch [{}/{}], train_loss: {:.4f}'.format(epoch +
+                                                             1, config.num_epochs, train_loss / total_step))
+
+        loss = train_loss / total_step
+        elapsed_time = time.time() - start_time
+        print('elapsed_time: {:.3f}s'.format(elapsed_time))
+
+        # Store Model
+        print(Fore.YELLOW + 'Step3: ' + Fore.RESET)
+        model_dir = os.path.dirname(os.path.realpath(__file__)) + '/model'
+        if not os.path.isdir(model_dir):
+            os.makedirs(model_dir)
+        log = 'batch_size={}_epoch={}'.format(
+            str(config.batch_size), str(config.num_epochs))
+        torch.save(model.state_dict(), model_path)
+        print(Fore.GREEN + 'Model stored in: ' +
+              Fore.MAGENTA + model_path + Fore.RESET)
+    else: 
+        print(Fore.GREEN + 'Model already exists!!' + Fore.RESET)
+        model = Model(config.input_size, config.hidden_size,
+                  config.num_layers, num_classes).to(device)
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
+  
+
 if __name__ == '__main__':
     os.system('clear')
     process_type = 'ust'  # 'ust' or 'all'
@@ -248,5 +457,8 @@ if __name__ == '__main__':
         file_path = processed_traces_folder + item
         if os.path.isfile(file_path):
             process_trace(ust_path=file_path)
+
+    train_lstm()
+    
 
     

@@ -53,7 +53,6 @@ class LoadReqRepSpans:
                 self.spans[root_tag]['count'] += 1
                 self.spans[root_tag]['duration'] = event['timestamp'] - \
                     self.spans[root_tag]['timestamp']
-                #self.spans[root_tag]['reqrepseq'].append({'neme': '{}/{}'.format(event['msgType'], event['procname']), 'timestamp':event['timestamp']})
                 if self.should_add_tidpid(self.spans[root_tag], event):
                     self.spans[root_tag]['tidPid'].append(
                         {'tid': event['vtid'], 'pid': event['vpid'], 'procname': event['procname']})
@@ -63,9 +62,6 @@ class LoadReqRepSpans:
                     'count': 1, 'timestamp': event['timestamp'],
                     'duration': 0,
                     'tidPid': [{'tid': event['vtid'], 'pid':event['vpid'], 'procname': event['procname']}],
-                    # 'reqrepseq': [{'neme': '{}/{}'.format(event['msgType'], event['procname']), 'timestamp':event['timestamp']}],
-                    # 'alias': 1,
-                    # 'max_alias':1
                 }
 
         elif event_tag.count('"tag":') > 1:  # This is a subspan
@@ -73,13 +69,10 @@ class LoadReqRepSpans:
                 should_consider, subspan_tag = self.should_consider_subspan(
                     event['msgTag'], root_tag)
                 if should_consider and subspan_tag not in self.spans[root_tag].keys():
-                    # self.spans[root_tag]['alias']+=1
-                    # alias = self.spans[root_tag]['alias']
                     self.spans[root_tag][subspan_tag] = {
                         'spanId': subspan_tag,
                         'count': 1, 'timestamp': event['timestamp'], 'duration': 0,
                         'tidPid': [{'tid': event['vtid'], 'pid':event['vpid'], 'procname': event['procname']}],
-                        # 'alias':alias
                         }
                     #self.spans[root_tag]['reqrepseq'].append({'neme': '{}/{}'.format(event['msgType'], event['procname']), 'timestamp':event['timestamp']})
                 elif should_consider and subspan_tag in self.spans[root_tag].keys():
@@ -120,6 +113,5 @@ class LoadReqRepSpans:
                             del self.spans[span_id][child]
 
     # This function returns spans directory
-
     def get_spans(self):
         return self.spans, self.trace_collection
