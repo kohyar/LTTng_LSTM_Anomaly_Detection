@@ -10,7 +10,6 @@ import json
 import gc
 from java.util.function import Function
 import csv
-from LoadReqRepSpans import LoadReqRepSpans
 
 loadModule('/TraceCompass/Analysis');
 loadModule('/TraceCompass/DataProvider');
@@ -18,7 +17,7 @@ loadModule('/TraceCompass/Trace');
 loadModule('/TraceCompass/Utils');
 loadModule('/TraceCompass/View');
 
-csv_path='/home/iman/Desktop/ust_events.csv'
+csv_path= '' # To be set
 
 start = time.time()
 # Create an analysis named userv_msg_seq.py
@@ -61,38 +60,8 @@ def runAnalysis():
 			writer.writerow(ust_event)
 	print('Step 1: UST events are processed.')
             
-        
-			    
-def make_spans(csv_path):
-    rows = []
-    print('Step 2: Load UST data...')
-    with open(csv_path) as myFile:
-        reader = csv.DictReader(myFile)
-        for row in reader:
-            ust_event = {}
-            ust_event['name'] = row['name']
-            ust_event['timestamp'] = float(row['timestamp'])
-            ust_event['msgTag'] = row['msgTag']
-            ust_event['vtid'] = int(row['vtid'])
-            ust_event['vpid'] = int(row['vpid'])
-            ust_event['procname'] = row['procname']
-
-            rows.append(ust_event)
-    print('Step 2: UST data is loaded.')
-
-    # Make spans
-    print('Step 3: Extracting the spans is started...')
-    lrr = LoadReqRepSpans(rows)
-    lrr.make_spans()
-    lrr.remove_incomplete_spans()
-    spans = lrr.get_spans()
-    # Create spans.json and spans_events.json
-    with open('spans.json', 'w') as json_file:
-        json.dump(spans, json_file)
-    print('Step 3: Spans are successfully extracted.')
     
 runAnalysis()
-spans = make_spans('events.csv')
 
 
 
